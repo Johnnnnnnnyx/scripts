@@ -102,7 +102,8 @@ do_install() {
   echo
   echo "==== 6. 写入 Xray 配置 ===="
   mkdir -p /usr/local/etc/xray
-  cat > "$XRAY_CONFIG" <<XRAYEOF
+  # 注意：这里使用了 'XRAYEOF' 加单引号，防止 EOF 块内部的变量在运行前被外部过度解析导致 unexpected EOF 报错
+  cat > "$XRAY_CONFIG" << 'XRAYEOF'
 {
   "log": {
     "loglevel": "warning"
@@ -111,12 +112,12 @@ do_install() {
     {
       "tag": "vless-reality",
       "listen": "0.0.0.0",
-      "port": ${PORT},
+      "port": PORT_PLACEHOLDER,
       "protocol": "vless",
       "settings": {
         "clients": [
           {
-            "id": "${UUID}"
+            "id": "UUID_PLACEHOLDER"
           }
         ],
         "decryption": "none"
@@ -126,14 +127,14 @@ do_install() {
         "security": "reality",
         "realitySettings": {
           "show": false,
-          "dest": "${DEST}",
+          "dest": "DEST_PLACEHOLDER",
           "xver": 0,
           "serverNames": [
-            "${SNI}"
+            "SNI_PLACEHOLDER"
           ],
-          "privateKey": "${PRIVATE_KEY}",
+          "privateKey": "PRIVATE_KEY_PLACEHOLDER",
           "shortIds": [
-            "${SHORT_ID}"
+            "SHORT_ID_PLACEHOLDER"
           ]
         }
       },
@@ -155,6 +156,14 @@ do_install() {
   ]
 }
 XRAYEOF
+
+  # 通过 sed 动态安全替换占位符，完美避开 Bash 管道嵌套的转义大坑
+  sed -i "s/PORT_PLACEHOLDER/${PORT}/g" "$XRAY_CONFIG"
+  sed -i "s/UUID_PLACEHOLDER/${UUID}/g" "$XRAY_CONFIG"
+  sed -i "s|DEST_PLACEHOLDER|${DEST}|g" "$XRAY_CONFIG"
+  sed -i "s/SNI_PLACEHOLDER/${SNI}/g" "$XRAY_CONFIG"
+  sed -i "s|PRIVATE_KEY_PLACEHOLDER|${PRIVATE_KEY}|g" "$XRAY_CONFIG"
+  sed -i "s/SHORT_ID_PLACEHOLDER/${SHORT_ID}/g" "$XRAY_CONFIG"
 
   echo
   echo "==== 7. 测试配置 ===="
