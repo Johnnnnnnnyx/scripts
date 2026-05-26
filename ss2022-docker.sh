@@ -15,6 +15,10 @@ red() {
     echo -e "\033[31m$1\033[0m"
 }
 
+yellow() {
+    echo -e "\033[33m$1\033[0m"
+}
+
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
         red "请使用 root 用户运行此脚本"
@@ -22,23 +26,77 @@ check_root() {
     fi
 }
 
-install_dependencies() {
-    green "==== 安装依赖 ===="
+check_system() {
+    if ! command -v apt >/dev/null 2>&1; then
+        red "当前脚本仅支持 Debian / Ubuntu 系统"
+        exit 1
+    fi
+}
+
+install_base_dependencies() {
+    green "==== 安装基础依赖 ===="
 
     apt update -y
 
     apt install -y \
-        docker.io \
-        apparmor \
-        apparmor-utils \
-        openssl \
+        ca-certificates \
         curl \
-        iproute2
+        gnupg \
+        openssl \
+        iproute2 \
+        apparmor \
+        apparmor-utils
+
+    green "基础依赖安装完成"
+}
+
+install_docker_if_needed() {
+    if command -v docker >/dev/null 2>&1; then
+        green "检测到 Docker 已安装，跳过 Docker 安装"
+
+        systemctl enable docker >/dev/null 2>&1 || true
+        systemctl restart docker >/dev/null 2>&1 || true
+
+        if docker info >/dev/null 2>&1; then
+            green "Docker 运行正常"
+        else
+            yellow "Docker 已安装，但当前运行状态可能异常，请检查：systemctl status docker"
+        fi
+
+        return
+    fi
+
+    green "==== 未检测到 Docker，开始安装 Docker 官方版 ===="
+
+    # 清理可能冲突的 Debian 自带 docker.io / containerd / runc
+    apt remove -y docker.io docker-doc docker-compose podman-docker containerd runc >/dev/null 2>&1 || true
+
+    install -m 0755 -d /etc/apt/keyrings
+
+    if [ ! -f /etc/apt/keyrings/docker.gpg ]; then
+        curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        chmod a+r /etc/apt/keyrings/docker.gpg
+    fi
+
+    ARCH="$(dpkg --print-architecture)"
+    CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+
+    echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian ${CODENAME} stable" \
+        > /etc/apt/sources.list.d/docker.list
+
+    apt update -y
+
+    apt install -y \
+        docker-ce \
+        docker-ce-cli \
+        containerd.io \
+        docker-buildx-plugin \
+        docker-compose-plugin
 
     systemctl enable docker
     systemctl restart docker
 
-    green "依赖安装完成"
+    green "Docker 官方版安装完成"
 }
 
 generate_port() {
@@ -53,6 +111,7 @@ generate_port() {
 }
 
 generate_password() {
+    # 2022-blake3-aes-256-gcm 需要 32 字节 PSK
     openssl rand -base64 32 | tr -d '\n'
 }
 
@@ -82,14 +141,29 @@ open_firewall() {
     fi
 }
 
+write_node_info() {
+    cat > "$INFO_FILE" <<INFO
+- name: 🇺🇸 Johnny SS2022
+  type: ss
+  server: ${SERVER_IP}
+  port: ${PORT}
+  cipher: ${METHOD}
+  password: "${PASSWORD}"
+  udp: true
+  udp-over-tcp: false
+INFO
+}
+
 install_ss2022() {
     check_root
+    check_system
 
     green "=================================================="
     green "Shadowsocks 2022 Docker 一键安装脚本"
     green "=================================================="
 
-    install_dependencies
+    install_base_dependencies
+    install_docker_if_needed
 
     green "==== 拉取 Docker 镜像 ===="
     docker pull "$IMAGE_NAME"
@@ -118,17 +192,7 @@ install_ss2022() {
         -U
 
     open_firewall "$PORT"
-
-    cat > "$INFO_FILE" <<INFO
-- name: 🇺🇸 Johnny SS2022
-  type: ss
-  server: ${SERVER_IP}
-  port: ${PORT}
-  cipher: ${METHOD}
-  password: "${PASSWORD}"
-  udp: true
-  udp-over-tcp: false
-INFO
+    write_node_info
 
     green "=================================================="
     green "安装完成"
@@ -139,7 +203,6 @@ INFO
     cat "$INFO_FILE"
     echo
     green "节点信息已保存到：$INFO_FILE"
-    echo
     green "查看日志：docker logs -f ${CONTAINER_NAME}"
     green "卸载命令：bash $0 uninstall"
 }
@@ -158,7 +221,11 @@ uninstall_ss2022() {
     fi
 
     green "==== 停止并删除容器 ===="
-    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    if command -v docker >/dev/null 2>&1; then
+        docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    else
+        yellow "未检测到 Docker，跳过容器删除"
+    fi
 
     green "==== 删除节点信息文件 ===="
     rm -f "$INFO_FILE"
@@ -172,9 +239,21 @@ uninstall_ss2022() {
     fi
 
     green "==== 删除 Docker 镜像 ===="
-    docker rmi "$IMAGE_NAME" >/dev/null 2>&1 || true
+    if command -v docker >/dev/null 2>&1; then
+        docker rmi "$IMAGE_NAME" >/dev/null 2>&1 || true
+    fi
 
     green "卸载完成"
+    yellow "注意：本脚本不会卸载 Docker 本身，避免影响你机器上其他 Docker 服务"
+}
+
+show_info() {
+    if [ -f "$INFO_FILE" ]; then
+        cat "$INFO_FILE"
+    else
+        red "未找到节点信息文件：$INFO_FILE"
+        exit 1
+    fi
 }
 
 show_menu() {
@@ -182,10 +261,11 @@ show_menu() {
     echo "请选择操作："
     echo "1) 安装 Shadowsocks 2022"
     echo "2) 卸载 Shadowsocks 2022"
+    echo "3) 查看节点信息"
     echo "0) 退出"
     echo
 
-    read -rp "请输入选项 [1-2]: " CHOICE
+    read -rp "请输入选项 [0-3]: " CHOICE
 
     case "$CHOICE" in
         1)
@@ -193,6 +273,9 @@ show_menu() {
             ;;
         2)
             uninstall_ss2022
+            ;;
+        3)
+            show_info
             ;;
         0)
             exit 0
@@ -210,6 +293,9 @@ case "$1" in
         ;;
     uninstall)
         uninstall_ss2022
+        ;;
+    info)
+        show_info
         ;;
     *)
         show_menu
