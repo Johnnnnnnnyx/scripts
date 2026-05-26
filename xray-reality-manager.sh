@@ -1,9 +1,6 @@
+cat > xray.sh << 'EOF'
 #!/bin/bash
 set -e
-
-# ==================================================
-# VLESS + REALITY 一体化管理脚本（无 Vision）
-# ==================================================
 
 SNI="learn.microsoft.com"
 DEST="learn.microsoft.com:443"
@@ -15,15 +12,11 @@ PORT_MAX=50000
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
 XRAY_BIN="/usr/local/bin/xray"
 
-# Root 检查
 if [ "$(id -u)" != "0" ]; then
   echo "❌ 错误：请使用 root 用户或使用 sudo 执行此脚本。"
   exit 1
 fi
 
-# ==================================================
-# 安装逻辑
-# ==================================================
 do_install() {
   echo
   echo "==== 1. 安装基础组件 ===="
@@ -41,7 +34,6 @@ do_install() {
   fi
   echo "公网 IP: ${SERVER_IP}"
 
-  # 自动识别厂商
   ORG=$(curl -4 -s --connect-timeout 5 "https://ipinfo.io/org" || true)
   if echo "$ORG" | grep -qi "Gomami"; then
     PROVIDER="Gomami"
@@ -102,7 +94,6 @@ do_install() {
   echo
   echo "==== 6. 写入 Xray 配置 ===="
   mkdir -p /usr/local/etc/xray
-  # 注意：这里使用了 'XRAYEOF' 加单引号，防止 EOF 块内部的变量在运行前被外部过度解析导致 unexpected EOF 报错
   cat > "$XRAY_CONFIG" << 'XRAYEOF'
 {
   "log": {
@@ -157,7 +148,6 @@ do_install() {
 }
 XRAYEOF
 
-  # 通过 sed 动态安全替换占位符，完美避开 Bash 管道嵌套的转义大坑
   sed -i "s/PORT_PLACEHOLDER/${PORT}/g" "$XRAY_CONFIG"
   sed -i "s/UUID_PLACEHOLDER/${UUID}/g" "$XRAY_CONFIG"
   sed -i "s|DEST_PLACEHOLDER|${DEST}|g" "$XRAY_CONFIG"
@@ -253,9 +243,6 @@ MIHOMOEOF
   echo "安装完成。"
 }
 
-# ==================================================
-# 卸载逻辑
-# ==================================================
 do_uninstall() {
   echo
   echo "==== 1. 尝试读取当前 Xray 端口 ===="
@@ -354,9 +341,6 @@ do_uninstall() {
   fi
 }
 
-# ==================================================
-# 交互菜单主循环
-# ==================================================
 clear
 echo "=================================================="
 echo "    Xray VLESS + REALITY 工具箱 (无 Vision)"
@@ -383,3 +367,4 @@ case "$CHOICE" in
     exit 1
     ;;
 esac
+EOF
