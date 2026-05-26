@@ -1,4 +1,4 @@
-bash <(cat <<'EOF'
+#!/bin/bash
 set -e
 
 # ==================================================
@@ -31,7 +31,6 @@ do_install() {
 
   echo
   echo "==== 2. 获取服务器信息 ===="
-  # 增加多 API 备用及超时机制，防止单个 API 卡死
   SERVER_IP=$(curl -4 -s --connect-timeout 5 https://api.ipify.org || \
               curl -4 -s --connect-timeout 5 https://icanhazip.com || \
               curl -4 -s --connect-timeout 5 https://ip.sb || true)
@@ -375,5 +374,3 @@ case "$CHOICE" in
     exit 1
     ;;
 esac
-EOF
-)
