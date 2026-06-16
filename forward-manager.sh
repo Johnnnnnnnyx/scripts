@@ -96,10 +96,11 @@ delete_rule_loop() {
 
 add_iptables_rule() {
   local lp="$1"
-  local ip="$2"
-  local tp="$3"
-  local proto="$4"
-  local comment="${TAG}:${proto}:${lp}->${ip}:${tp}"
+  local host="$2"
+  local ip="$3"
+  local tp="$4"
+  local proto="$5"
+  local comment="${TAG}:${proto}:${lp}->${host}:${tp}"
 
   ensure_rule nat PREROUTING \
     -p "$proto" --dport "$lp" \
@@ -124,10 +125,11 @@ add_iptables_rule() {
 
 delete_iptables_rule() {
   local lp="$1"
-  local ip="$2"
-  local tp="$3"
-  local proto="$4"
-  local comment="${TAG}:${proto}:${lp}->${ip}:${tp}"
+  local host="$2"
+  local ip="$3"
+  local tp="$4"
+  local proto="$5"
+  local comment="${TAG}:${proto}:${lp}->${host}:${tp}"
 
   delete_rule_loop nat PREROUTING \
     -p "$proto" --dport "$lp" \
@@ -147,11 +149,12 @@ delete_iptables_rule() {
 
 rule_exists_in_conf() {
   local lp="$1"
-  local ip="$2"
-  local tp="$3"
-  local proto="$4"
+  local host="$2"
+  local ip="$3"
+  local tp="$4"
+  local proto="$5"
 
-  grep -qx "$lp $ip $tp $proto" "$CONF"
+  grep -qx "$lp $host $ip $tp $proto" "$CONF"
 }
 
 add_rule() {
@@ -179,35 +182,36 @@ add_rule() {
   fi
 
   if valid_ip "$input_host"; then
+    target_host="$input_host"
     target_ip="$input_host"
   elif valid_host "$input_host"; then
+    target_host="$input_host"
     target_ip=$(resolve_host "$input_host")
 
     if [ -z "$target_ip" ]; then
       echo "域名解析失败：$input_host"
       return
     fi
-
-    echo "域名解析结果：$input_host -> $target_ip"
   else
     echo "目标IP或域名错误"
     return
   fi
 
-  if rule_exists_in_conf "$lp" "$target_ip" "$tp" "$proto"; then
+  if rule_exists_in_conf "$lp" "$target_host" "$target_ip" "$tp" "$proto"; then
     echo "配置已存在"
-    add_iptables_rule "$lp" "$target_ip" "$tp" "$proto"
+    add_iptables_rule "$lp" "$target_host" "$target_ip" "$tp" "$proto"
     sync_save
     echo "已检查并补齐 iptables 规则"
     return
   fi
 
-  echo "$lp $target_ip $tp $proto" >> "$CONF"
+  echo "$lp $target_host $target_ip $tp $proto" >> "$CONF"
 
-  add_iptables_rule "$lp" "$target_ip" "$tp" "$proto"
+  add_iptables_rule "$lp" "$target_host" "$target_ip" "$tp" "$proto"
   sync_save
 
-  echo "添加成功：0.0.0.0:${lp}/${proto} -> ${target_ip}:${tp}"
+  echo "添加成功：0.0.0.0:${lp}/${proto} -> ${target_host}:${tp}"
+  echo "实际转发IP：${target_ip}"
 }
 
 list_rule() {
@@ -218,8 +222,14 @@ list_rule() {
     return
   fi
 
-  echo "编号  本机端口  目标IP或域名解析后的IP  目标端口  协议"
-  nl -ba "$CONF"
+  printf "%-6s %-10s %-30s %-18s %-10s %-6s\n" "编号" "本机端口" "目标IP或域名" "实际IP" "目标端口" "协议"
+
+  local i=1
+  while read -r lp host ip tp proto; do
+    [ -z "$lp" ] && continue
+    printf "%-6s %-10s %-30s %-18s %-10s %-6s\n" "$i" "$lp" "$host" "$ip" "$tp" "$proto"
+    i=$((i + 1))
+  done < "$CONF"
 }
 
 del_rule() {
@@ -241,22 +251,22 @@ del_rule() {
     return
   fi
 
-  read -r lp ip tp proto <<< "$line"
+  read -r lp host ip tp proto <<< "$line"
 
-  delete_iptables_rule "$lp" "$ip" "$tp" "$proto"
+  delete_iptables_rule "$lp" "$host" "$ip" "$tp" "$proto"
 
   sed -i "${n}d" "$CONF"
 
   sync_save
-  echo "删除成功"
+  echo "删除成功：0.0.0.0:${lp}/${proto} -> ${host}:${tp}"
 }
 
 reload_all() {
   echo "=== 重建脚本管理的规则 ==="
 
-  while read -r lp ip tp proto; do
+  while read -r lp host ip tp proto; do
     [ -z "$lp" ] && continue
-    delete_iptables_rule "$lp" "$ip" "$tp" "$proto"
+    delete_iptables_rule "$lp" "$host" "$ip" "$tp" "$proto"
   done < "$CONF"
 
   delete_rule_loop filter FORWARD \
@@ -264,10 +274,32 @@ reload_all() {
     -m comment --comment "${TAG}:established" \
     -j ACCEPT
 
-  while read -r lp ip tp proto; do
+  TMP_CONF=$(mktemp)
+
+  while read -r lp host old_ip tp proto; do
     [ -z "$lp" ] && continue
-    add_iptables_rule "$lp" "$ip" "$tp" "$proto"
+
+    if valid_ip "$host"; then
+      new_ip="$host"
+    else
+      new_ip=$(resolve_host "$host")
+      if [ -z "$new_ip" ]; then
+        echo "跳过：$host 解析失败"
+        echo "$lp $host $old_ip $tp $proto" >> "$TMP_CONF"
+        continue
+      fi
+    fi
+
+    echo "$lp $host $new_ip $tp $proto" >> "$TMP_CONF"
+    add_iptables_rule "$lp" "$host" "$new_ip" "$tp" "$proto"
+
+    if [ "$old_ip" != "$new_ip" ]; then
+      echo "更新解析：$host $old_ip -> $new_ip"
+    fi
   done < "$CONF"
+
+  mv "$TMP_CONF" "$CONF"
+  chmod 600 "$CONF"
 
   sync_save
   echo "重建完成"
@@ -296,9 +328,9 @@ status() {
 
 cleanup_legacy() {
   echo "=== 清理旧版无注释规则 ==="
-  echo "只会根据配置文件中的规则清理旧版 DNAT/FORWARD/MASQUERADE"
+  echo "会根据配置文件清理旧版无 comment 的 DNAT/FORWARD/MASQUERADE"
 
-  while read -r lp ip tp proto; do
+  while read -r lp host ip tp proto; do
     [ -z "$lp" ] && continue
 
     while $IPT -t nat -C PREROUTING -p "$proto" --dport "$lp" -j DNAT --to-destination "$ip:$tp" 2>/dev/null; do
@@ -339,7 +371,7 @@ test_target() {
       return
     fi
 
-    echo "域名解析结果：$input_host -> $target_ip"
+    echo "解析结果：$input_host -> $target_ip"
   else
     echo "目标IP或域名错误"
     return
@@ -350,6 +382,16 @@ test_target() {
   else
     echo "未安装 nc，可执行：apt install -y netcat-openbsd"
   fi
+}
+
+show_raw() {
+  echo "=== iptables 原始规则 ==="
+  echo ""
+  echo "--- NAT ---"
+  $IPT -t nat -S
+  echo ""
+  echo "--- FORWARD ---"
+  $IPT -S FORWARD
 }
 
 menu() {
@@ -363,6 +405,7 @@ menu() {
     echo "5. 状态查看"
     echo "6. 清理旧版无注释规则"
     echo "7. 测试目标端口"
+    echo "8. 查看 iptables 原始规则"
     echo "0. 退出"
     echo "======================="
 
@@ -376,6 +419,7 @@ menu() {
       5) status ;;
       6) cleanup_legacy ;;
       7) test_target ;;
+      8) show_raw ;;
       0) exit 0 ;;
       *) echo "无效选择" ;;
     esac
