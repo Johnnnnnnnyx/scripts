@@ -190,7 +190,7 @@ add_rule() {
 
     echo "域名解析结果：$input_host -> $target_ip"
   else
-    echo "目标 IP/域名错误"
+    echo "目标IP或域名错误"
     return
   fi
 
@@ -218,6 +218,7 @@ list_rule() {
     return
   fi
 
+  echo "编号  本机端口  目标IP或域名解析后的IP  目标端口  协议"
   nl -ba "$CONF"
 }
 
@@ -340,7 +341,7 @@ test_target() {
 
     echo "域名解析结果：$input_host -> $target_ip"
   else
-    echo "目标 IP/域名错误"
+    echo "目标IP或域名错误"
     return
   fi
 
