@@ -2,7 +2,6 @@
 
 CONF="/etc/port-forward-manager.conf"
 TAG="pfm"
-
 IPT="iptables -w"
 
 check_root() {
@@ -46,6 +45,21 @@ valid_ip() {
   return 0
 }
 
+valid_host() {
+  local host="$1"
+
+  [[ "$host" =~ ^[a-zA-Z0-9.-]+$ ]] || return 1
+  [[ "$host" == *.* ]] || return 1
+  [[ "$host" != .* ]] || return 1
+  [[ "$host" != *. ]] || return 1
+
+  return 0
+}
+
+resolve_host() {
+  getent ahostsv4 "$1" | awk '{print $1; exit}'
+}
+
 valid_proto() {
   [ "$1" = "tcp" ] || [ "$1" = "udp" ]
 }
@@ -55,7 +69,6 @@ sync_save() {
 }
 
 ensure_rule() {
-  # 用法：ensure_rule table args...
   local table="$1"
   shift
 
@@ -67,7 +80,6 @@ ensure_rule() {
 }
 
 delete_rule_loop() {
-  # 用法：delete_rule_loop table args...
   local table="$1"
   shift
 
@@ -89,25 +101,21 @@ add_iptables_rule() {
   local proto="$4"
   local comment="${TAG}:${proto}:${lp}->${ip}:${tp}"
 
-  # 入口 DNAT：本机端口 -> 目标IP:目标端口
   ensure_rule nat PREROUTING \
     -p "$proto" --dport "$lp" \
     -m comment --comment "$comment:dnat" \
     -j DNAT --to-destination "$ip:$tp"
 
-  # 出口 MASQUERADE：让目标机看到来源是本机，确保回包走回来
   ensure_rule nat POSTROUTING \
     -p "$proto" -d "$ip" --dport "$tp" \
     -m comment --comment "$comment:masq" \
     -j MASQUERADE
 
-  # 放行新连接到目标端口
   ensure_rule filter FORWARD \
     -p "$proto" -d "$ip" --dport "$tp" \
     -m comment --comment "$comment:fwd-in" \
     -j ACCEPT
 
-  # 放行已建立连接的回包
   ensure_rule filter FORWARD \
     -m conntrack --ctstate RELATED,ESTABLISHED \
     -m comment --comment "${TAG}:established" \
@@ -150,18 +158,13 @@ add_rule() {
   echo "=== 添加端口转发 ==="
 
   read -rp "本机端口: " lp
-  read -rp "目标IP: " ip
+  read -rp "目标IP或域名: " input_host
   read -rp "目标端口: " tp
   read -rp "协议 tcp/udp，默认 tcp: " proto
   proto=${proto:-tcp}
 
   if ! valid_port "$lp"; then
     echo "本机端口错误"
-    return
-  fi
-
-  if ! valid_ip "$ip"; then
-    echo "目标 IP 错误"
     return
   fi
 
@@ -175,20 +178,36 @@ add_rule() {
     return
   fi
 
-  if rule_exists_in_conf "$lp" "$ip" "$tp" "$proto"; then
+  if valid_ip "$input_host"; then
+    target_ip="$input_host"
+  elif valid_host "$input_host"; then
+    target_ip=$(resolve_host "$input_host")
+
+    if [ -z "$target_ip" ]; then
+      echo "域名解析失败：$input_host"
+      return
+    fi
+
+    echo "域名解析结果：$input_host -> $target_ip"
+  else
+    echo "目标 IP/域名错误"
+    return
+  fi
+
+  if rule_exists_in_conf "$lp" "$target_ip" "$tp" "$proto"; then
     echo "配置已存在"
-    add_iptables_rule "$lp" "$ip" "$tp" "$proto"
+    add_iptables_rule "$lp" "$target_ip" "$tp" "$proto"
     sync_save
     echo "已检查并补齐 iptables 规则"
     return
   fi
 
-  echo "$lp $ip $tp $proto" >> "$CONF"
+  echo "$lp $target_ip $tp $proto" >> "$CONF"
 
-  add_iptables_rule "$lp" "$ip" "$tp" "$proto"
+  add_iptables_rule "$lp" "$target_ip" "$tp" "$proto"
   sync_save
 
-  echo "添加成功：0.0.0.0:${lp}/${proto} -> ${ip}:${tp}"
+  echo "添加成功：0.0.0.0:${lp}/${proto} -> ${target_ip}:${tp}"
 }
 
 list_rule() {
@@ -301,16 +320,32 @@ cleanup_legacy() {
 test_target() {
   echo "=== 测试目标连通性 ==="
 
-  read -rp "目标IP: " ip
+  read -rp "目标IP或域名: " input_host
   read -rp "目标端口: " tp
 
-  if ! valid_ip "$ip" || ! valid_port "$tp"; then
-    echo "输入错误"
+  if ! valid_port "$tp"; then
+    echo "端口错误"
+    return
+  fi
+
+  if valid_ip "$input_host"; then
+    target_ip="$input_host"
+  elif valid_host "$input_host"; then
+    target_ip=$(resolve_host "$input_host")
+
+    if [ -z "$target_ip" ]; then
+      echo "域名解析失败：$input_host"
+      return
+    fi
+
+    echo "域名解析结果：$input_host -> $target_ip"
+  else
+    echo "目标 IP/域名错误"
     return
   fi
 
   if command -v nc >/dev/null 2>&1; then
-    nc -vz "$ip" "$tp"
+    nc -vz "$target_ip" "$tp"
   else
     echo "未安装 nc，可执行：apt install -y netcat-openbsd"
   fi
